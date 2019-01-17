@@ -1,76 +1,85 @@
-/* global process require */
+/* global __dirname process require */
 
 const chalk = require('chalk');
 const {execSync} = require('child_process');
 const minimist = require('minimist');
+const path = require('path');
 const {prompt} = require('promptly');
-const standardVersion = require('standard-version');
+const semver = require('semver');
 
 const args = minimist(process.argv.slice(2));
+const lernaJson = require(path.join(__dirname, '../lerna.json'));
 
-const DEFAULT_UPSTREAM_REPO_BRANCH = 'master';
-const DEFAULT_UPSTREAM_REPO_ORIGIN = 'origin';
-const branch = args['repo-branch'] || DEFAULT_UPSTREAM_REPO_BRANCH;
-const origin = args['repo-origin'] || DEFAULT_UPSTREAM_REPO_ORIGIN;
+const DEFAULT_COMMIT_MSG = `chore(release): %v`;
+const commitMsg = args['commit-message'] || DEFAULT_COMMIT_MSG;
 
-const distTag = args['npm-dist-tag'];
-const dryRun = args['dry-run'];
-const prerelease = args.prerelease;
-const releaseAs = args['release-as'];
-const sign = args.sign;
+const DEFAULT_DIST_TAG = `latest`;
+const distTag = args['dist-tag'] || DEFAULT_DIST_TAG;
 
-// eslint-disable-next-line no-confusing-arrow
-const dryRunMaybe = () => dryRun ? leftPad1(chalk.yellow('(DRY RUN)')) : '';
+const DEFAULT_GIT_BRANCH = `master`;
+const branch = args['git-branch'] || DEFAULT_GIT_BRANCH;
+
+const DEFAULT_GIT_REMOTE = `origin`;
+const remote = args['git-remote'] || DEFAULT_GIT_REMOTE;
+
+let DEFAULT_PRE_ID;
+const prerelease = semver(lernaJson.version).prerelease;
+if (prerelease.length > 1) {
+  DEFAULT_PRE_ID = prerelease[0];
+}
+const preId = args.preid || DEFAULT_PRE_ID;
+
+const DEFAULT_REGISTRY = lernaJson.command.publish.registry;
+const registry = args.registry || DEFAULT_REGISTRY;
+
+const DEFAULT_SIGN = false;
+const sign = args.sign || DEFAULT_SIGN;
+
+const bump = args._[0];
+
+const cyan = (str) => chalk.cyan(str);
 const execSyncInherit = (cmd) => execSync(cmd, {stdio: 'inherit'});
-// eslint-disable-next-line no-confusing-arrow
-const leftPad1 = (str) => ' ' + str;
-// eslint-disable-next-line no-confusing-arrow
-const leftPad1Maybe = (str) => str ? leftPad1(str) : str;
-const log = (mark, str) => console.log(mark, str.filter(s => !!s).join(' '));
-const logError = (...str) => log(chalk.red('✘'), str);
-const logInfo = (...str) => log(chalk.blue('ℹ'), str);
-const logSuccess = (...str) => log(chalk.green('✔'), str);
-const logWarning = (...str) => log(chalk.yellow('‼︎'), str);
+const log = (mark, str) => console.log(mark, str.filter(s => !!s).join(` `));
+const logError = (...str) => log(chalk.red(`✘`), str);
+const logInfo = (...str) => log(chalk.blue(`ℹ`), str);
+const logSuccess = (...str) => log(chalk.green(`✔`), str);
 
-const yesNoValidator = (input) => {
-  const _input = input && input[0].toLowerCase();
-  if (!['y', 'n'].includes(_input)) {
-    throw new Error(chalk.red('✘') + leftPad1(`Please answer [y]es or [n]o.`));
-  }
-  return _input;
+const reportSetting = (desc, val, def) => {
+  logInfo(`${desc} is set to ${cyan(val)}${val === def ? ` (default).`: `.`}`);
 };
 
-const promptOpts = {default: 'blank', validator: yesNoValidator};
-
-const proceedAnywayPrompt = async () => {
-  let answer = await prompt(
-    `${chalk.yellow('⁉︎')} Proceed anyway? [y/n]`,
-    promptOpts
-  );
-  if (answer === 'n') {
-    logWarning(`Stopping right here.`);
-    process.exit(0);
+const runCommand = (cmd, inherit = true, display) => {
+  logInfo(`Running command ${cyan(display || cmd)}.`);
+  let out;
+  if (inherit) {
+    execSyncInherit(cmd);
+  } else {
+    out = execSync(cmd);
   }
-};
-
-const dryRunPrompt = async () => {
-  let answer = await prompt(
-    `${chalk.blue('⁇')} This is ${chalk.yellow('NOT')} a --dry-run.` +
-      leftPad1(`Did you complete a successful --dry-run first? [y/n]`),
-    promptOpts
-  );
-  if (answer === 'n') await proceedAnywayPrompt();
+  return out;
 };
 
 (async () => {
   try {
-    if (!dryRun) await dryRunPrompt();
+    logInfo(`Checking the working tree...`);
 
+    try {
+      runCommand(`npm run --silent cwtree`, true, `npm run cwtree`);
+      logSuccess(`Working tree is clean.`);
+    } catch (e) {
+      logError(
+        `Working tree is dirty or has untracked files.`,
+        `Please make necessary changes or commits before rerunning this script.`
+      );
+      throw new Error();
+    }
+
+    reportSetting(`Release branch`, branch, DEFAULT_GIT_BRANCH);
     logInfo(`Determining the current branch...`);
 
     let currentBranch;
     try {
-      currentBranch = execSync(`git rev-parse --abbrev-ref HEAD`)
+      currentBranch = runCommand(`git rev-parse --abbrev-ref HEAD`, false)
         .toString()
         .trim();
     } catch (e) {
@@ -78,111 +87,144 @@ const dryRunPrompt = async () => {
       throw new Error();
     }
 
-    if (currentBranch !== branch) {
+    if (currentBranch === branch) {
+      logSuccess(`Current branch and release branch are the same.`);
+    } else {
       logError(
-        `Current branch '${currentBranch}' is not the same as release branch`,
-        `'${branch}'. Please checkout the release branch before rerunning this`,
-        `script or rerun with '--repo-branch ${currentBranch}'.`
+        `Current branch ${cyan(currentBranch)} is not the same as release`,
+        `branch ${cyan(branch)}. Please checkout the release branch before`,
+        `rerunning this script or rerun with`,
+        `${cyan(`--git-branch ${currentBranch}`)}.`
       );
       throw new Error();
     }
 
-    logSuccess(`Current branch and release branch are the same.`);
-    logInfo(`Checking the working tree...`);
-
-    try {
-      execSyncInherit(`npm run --silent check-working-tree`);
-      logSuccess(`Working tree is clean.`);
-    } catch (e) {
-      logError(
-        `Working tree is dirty or has untracked files. Please make necessary`,
-        `changes or commits before rerunning this script.`
-      );
-      throw new Error();
-    }
-
+    reportSetting(`Git remote`, remote, DEFAULT_GIT_REMOTE);
     logInfo(
-      `Fetching from origin '${origin}' to compare local and remote branches...`
+      `Fetching commits from ${cyan(remote)}`,
+      `to compare local and remote branches...`
     );
 
     try {
-      execSyncInherit(`git fetch ${origin}`);
+      runCommand(`git fetch ${remote}`);
     } catch (e) {
       logError(`Couldn't fetch latest commits. Please check the error above.`);
       throw new Error();
     }
 
-    let localRef, originRef;
+    let localRef, remoteRef;
     try {
-      localRef = execSync(`git rev-parse ${branch}`).toString();
-      originRef = execSync(`git rev-parse ${origin}/${branch}`).toString();
+      localRef = runCommand(`git rev-parse ${branch}`, false).toString();
+      remoteRef = (
+        runCommand(`git rev-parse ${remote}/${branch}`, false).toString()
+      );
     } catch (e) {
       logError(`A problem occured. Please check the error above.`);
       throw new Error();
     }
 
-    if (localRef !== originRef) {
+    if (localRef === remoteRef) {
+      logSuccess(`Local branch is in sync with remote branch.`);
+    } else {
       logError(
-        `Local branch '${branch}' is not in sync with '${origin}/${branch}'.`,
+        `Local branch ${cyan(branch)} is not in sync with`,
+        `${cyan(`${remote}/${branch}`)}.`,
         `Please sync branches before rerunning this script.`
       );
       throw new Error();
     }
 
-    logSuccess(`Local branch is in sync with remote branch.`);
-    logInfo(`Running Standard Version${dryRunMaybe()}...`);
-
-    await standardVersion({
-      dryRun,
-      prerelease,
-      releaseAs,
-      sign
-    });
-
-    logInfo(`Publishing new Embark version on npm${dryRunMaybe()}...`);
-
-    const npmPublishCommand = [
-      `npm publish`,
-      leftPad1Maybe(`${distTag ? `--tag ${distTag}` : ''}`),
-      leftPad1Maybe(`${dryRun ? '--dry-run' : ''}`)
-    ].join('');
+    logInfo(
+      `It's time to prepare for and run the QA suite, this will take awhile...`
+    );
 
     try {
-      execSyncInherit(npmPublishCommand);
-      logSuccess(`Successfully published latest version${dryRunMaybe()}.`);
+      runCommand(`npm run prepare:qa`);
+      logSuccess(`All steps succeeded when preparing for the QA suite.`);
+    } catch (e) {
+      logError(`A step failed in the QA suite. Please check the error above.`);
+      throw new Error();
+    }
+
+    try {
+      runCommand(`npm run qa`);
+      logSuccess(`All steps succeeded in the QA suite.`);
+    } catch (e) {
+      logError(`A step failed in the QA suite. Please check the error above.`);
+      throw new Error();
+    }
+
+    logInfo(`Versioning with Lerna...`);
+    reportSetting(`Commit message format`, commitMsg, DEFAULT_COMMIT_MSG);
+    reportSetting(`Prerelease identifier`, preId, DEFAULT_PRE_ID);
+    reportSetting(`Signature option`, sign, DEFAULT_SIGN);
+
+    const lernaVersion = [
+      `lerna version`,
+      bump || ``,
+      `--conventional-commits`,
+      `--git-remote ${remote}`,
+      `--message ${commitMsg}`,
+      `--no-push`,
+      preId && `--preid ${preId}`,
+      `--sign-git-commit ${sign}`,
+      `--sign-git-tag ${sign}`
+    ].filter(str => !!str).join(` `);
+
+    try {
+      runCommand(lernaVersion);
+      logSuccess(`Successfully bumped the version.`);
+    } catch (e) {
+      logError(`Couldn't bump the version. Please check the error above.`);
+      throw new Error();
+    }
+
+    //
+    process.exit(0);
+    //
+
+    logInfo(`Publishing with Lerna...`);
+    reportSetting(`Package distribution tag`, distTag, DEFAULT_DIST_TAG);
+    reportSetting(`Package registry`, registry, DEFAULT_REGISTRY);
+
+    const lernaPublish = [
+      `lerna publish`,
+      `from-git`,
+      `--dist-tag ${distTag}`,
+      `--no-git-reset`,
+      `--registry ${registry}`
+    ].join(` `);
+
+    try {
+      runCommand(lernaPublish);
+      logSuccess(`Successfully published the new version.`);
     } catch (e) {
       logError(
-        `Couldn't publish version on npm${dryRunMaybe()}.`,
-        `Please check the error above.`
+        `Couldn't publish the new version. Please check the error above.`,
       );
       throw new Error();
     }
 
     logInfo(
-      `Pushing release commit and tag to origin '${origin}' on branch`,
-      `'${branch}'${dryRunMaybe()}...`
+      `Pushing release commit and tag to remote ${cyan(remote)} on branch`,
+      `${cyan(branch)}...`
     );
 
-    const gitPushCommand = [
-      `git push --follow-tags ${origin} ${branch}`,
-      leftPad1Maybe(`${dryRun ? '--dry-run' : ''}`)
-    ].join('');
+    const gitPush = `git push --follow-tags ${remote} ${branch}`;
 
     try {
-      execSyncInherit(gitPushCommand);
-      logSuccess(`Successfully pushed${dryRunMaybe()}.`);
+      runCommand(gitPush);
+      logSuccess(`Successfully pushed.`);
     } catch (e) {
-      logError(
-        `Couldn't push${dryRunMaybe()}. Please check the error above.`
-      );
+      logError(`Couldn't push. Please check the error above.`);
       throw new Error();
     }
 
-    logSuccess(`Woohoo! Done${dryRunMaybe()}.`);
+    logSuccess(`${chalk.green(`RELEASE SUCCEEDED!`)} Woohoo! Done.`);
   } catch (e) {
     logError(
-      `Stopping right here${dryRunMaybe()}.`,
-      dryRun ? '' : `Make sure to clean up commits and tags as necessary.`
+      `${chalk.red(`RELEASE FAILED!`)} Stopping right here.`,
+      `Make sure to clean up commits and tags as necessary.`
     );
     process.exit(1);
   }
