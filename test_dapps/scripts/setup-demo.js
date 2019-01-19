@@ -11,7 +11,7 @@ try {
     const SCRIPT_EMBARK_BIN = process.env.SCRIPT_EMBARK_BIN;
     let EMBARK_BIN;
     if (SCRIPT_EMBARK_BIN) {
-      EMBARK_BIN = `node ${EMBARK_BIN}`;
+      EMBARK_BIN = `node ${SCRIPT_EMBARK_BIN}`;
     } else {
       EMBARK_BIN = `embark`;
     }
