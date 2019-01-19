@@ -8,7 +8,6 @@ const {prompt} = require('promptly');
 const semver = require('semver');
 
 const args = minimist(process.argv.slice(2));
-const lernaJson = require(path.join(__dirname, '../lerna.json'));
 
 const DEFAULT_COMMIT_MSG = `chore(release): %v`;
 const commitMsg = args['commit-message'] || DEFAULT_COMMIT_MSG;
@@ -22,16 +21,6 @@ const branch = args['git-branch'] || DEFAULT_GIT_BRANCH;
 const DEFAULT_GIT_REMOTE = `origin`;
 const remote = args['git-remote'] || DEFAULT_GIT_REMOTE;
 
-let DEFAULT_PRE_ID;
-const prerelease = semver(lernaJson.version).prerelease;
-if (prerelease.length > 1) {
-  DEFAULT_PRE_ID = prerelease[0];
-}
-const preId = args.preid || DEFAULT_PRE_ID;
-
-const DEFAULT_REGISTRY = lernaJson.command.publish.registry;
-const registry = args.registry || DEFAULT_REGISTRY;
-
 const DEFAULT_SIGN = false;
 const sign = args.sign || DEFAULT_SIGN;
 
@@ -39,8 +28,10 @@ const bump = args._[0];
 
 const cyan = (str) => chalk.cyan(str);
 const execSyncInherit = (cmd) => execSync(cmd, {stdio: 'inherit'});
-const log = (mark, str) => console.log(mark, str.filter(s => !!s).join(` `));
-const logError = (...str) => log(chalk.red(`✘`), str);
+const log = (mark, str, which = 'log') => console[which](
+  mark, str.filter(s => !!s).join(` `)
+);
+const logError = (...str) => log(chalk.red(`✘`), str, 'error');
 const logInfo = (...str) => log(chalk.blue(`ℹ`), str);
 const logSuccess = (...str) => log(chalk.green(`✔`), str);
 
@@ -61,6 +52,29 @@ const runCommand = (cmd, inherit = true, display) => {
 
 (async () => {
   try {
+    let DEFAULT_PRE_ID, preId;
+    let DEFAULT_REGISTRY, registry;
+    const lernaJsonPath = path.join(__dirname, '../lerna.json');
+    try {
+      const lernaJson = require(lernaJsonPath);
+
+      const prerelease = semver(lernaJson.version).prerelease;
+      if (prerelease.length > 1) {
+        DEFAULT_PRE_ID = prerelease[0];
+      }
+      const preId = args.preid || DEFAULT_PRE_ID;
+
+      DEFAULT_REGISTRY = lernaJson.command.publish.registry;
+      const registry = args.registry || DEFAULT_REGISTRY;
+    } catch (e) {
+      console.error(e.stack);
+      logError(
+        `Could not read values from ${cyan(lernaJsonPath)}.`,
+        `Please check the error above.`
+      );
+      throw new Error();
+    }
+
     logInfo(`Checking the working tree...`);
 
     try {
@@ -135,16 +149,8 @@ const runCommand = (cmd, inherit = true, display) => {
     }
 
     logInfo(
-      `It's time to prepare for and run the QA suite, this will take awhile...`
+      `It's time to run the QA suite, this will take awhile...`
     );
-
-    try {
-      runCommand(`npm run prepare:qa`);
-      logSuccess(`All steps succeeded when preparing for the QA suite.`);
-    } catch (e) {
-      logError(`A step failed in the QA suite. Please check the error above.`);
-      throw new Error();
-    }
 
     try {
       runCommand(`npm run qa`);
